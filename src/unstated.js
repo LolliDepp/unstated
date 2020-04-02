@@ -75,6 +75,13 @@ export class Subscribe extends React.Component {
 
   _createInstances(map, containers) {
     let index = 0;
+    let containersArray;
+    if (Array.isArray(containers)) {
+      containersArray = containers;
+    } else {
+      DUMMY_ARRAY[0] = containers;
+      containersArray = DUMMY_ARRAY;
+    }
     while (index < this.instances.length) {
       if (!containers.includes(this.instances[index])) {
         this.instances.splice(index, 1);

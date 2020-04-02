@@ -17,7 +17,10 @@ export interface ContainerType<State extends object> {
 }
 
 interface SubscribeProps {
-  to: (ContainerType<any> | Container<any>)[];
+  to:
+    | ContainerType<any>
+    | Container<any>
+    | (ContainerType<any> | Container<any>)[];
   children(...instances: Container<any>[]): React.ReactNode;
 }
 
