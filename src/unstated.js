@@ -1,40 +1,28 @@
-// @flow
-import React, { type Node } from 'react';
-import createReactContext from 'create-react-context';
+import React from 'react';
 
-type Listener = () => mixed;
+const StateContext = React.createContext({});
 
-const StateContext = createReactContext(null);
+export class Container {
+  state;
+  _listeners = [];
+  _nextState;
 
-export class Container<State: {}> {
-  state: State;
-  _listeners: Array<Listener> = [];
-
-  constructor() {
-    CONTAINER_DEBUG_CALLBACKS.forEach(cb => cb(this));
-  }
-
-  setState(
-    updater: $Shape<State> | ((prevState: $Shape<State>) => $Shape<State>),
-    callback?: () => void
-  ): Promise<void> {
+  setState(updater, callback) {
     return Promise.resolve().then(() => {
-      let nextState;
-
       if (typeof updater === 'function') {
-        nextState = updater(this.state);
+        this.nextState = updater(this.state);
       } else {
-        nextState = updater;
+        this.nextState = updater;
       }
 
-      if (nextState == null) {
+      if (this.nextState == null) {
         if (callback) callback();
         return;
       }
 
-      this.state = Object.assign({}, this.state, nextState);
+      this.state = Object.assign(this.state, this.nextState);
 
-      let promises = this._listeners.map(listener => listener());
+      this._listeners.forEach(listener => listener());
 
       return Promise.all(promises).then(() => {
         if (callback) {
@@ -44,36 +32,24 @@ export class Container<State: {}> {
     });
   }
 
-  subscribe(fn: Listener) {
+  subscribe(fn) {
     this._listeners.push(fn);
   }
 
-  unsubscribe(fn: Listener) {
-    this._listeners = this._listeners.filter(f => f !== fn);
+  unsubscribe(fn) {
+    const index = this._listeners.indexOf(fn);
+    if (index >= 0) {
+      this._listeners.splice(index, 1);
+    }
   }
 }
 
-export type ContainerType = Container<Object>;
-export type ContainersType = Array<Class<ContainerType> | ContainerType>;
-export type ContainerMapType = Map<Class<ContainerType>, ContainerType>;
-
-export type SubscribeProps<Containers: ContainersType> = {
-  to: Containers,
-  children: (
-    ...instances: $TupleMap<Containers, <C>(Class<C> | C) => C>
-  ) => Node
-};
-
-type SubscribeState = {};
-
 const DUMMY_STATE = {};
+const DUMMY_ARRAY = [null];
 
-export class Subscribe<Containers: ContainersType> extends React.Component<
-  SubscribeProps<Containers>,
-  SubscribeState
-> {
+export class Subscribe extends React.Component {
   state = {};
-  instances: Array<ContainerType> = [];
+  instances = [];
   unmounted = false;
 
   componentWillUnmount() {
@@ -87,7 +63,7 @@ export class Subscribe<Containers: ContainersType> extends React.Component<
     });
   }
 
-  onUpdate: Listener = () => {
+  onUpdate = () => {
     return new Promise(resolve => {
       if (!this.unmounted) {
         this.setState(DUMMY_STATE, resolve);
@@ -97,11 +73,15 @@ export class Subscribe<Containers: ContainersType> extends React.Component<
     });
   };
 
-  _createInstances(
-    map: ContainerMapType | null,
-    containers: ContainersType
-  ): Array<ContainerType> {
-    this._unsubscribe();
+  _createInstances(map, containers) {
+    let index = 0;
+    while (index < this.instances.length) {
+      if (!containers.includes(this.instances[index])) {
+        this.instances.splice(index, 1);
+      } else {
+        index += 1;
+      }
+    }
 
     if (map === null) {
       throw new Error(
@@ -109,81 +89,58 @@ export class Subscribe<Containers: ContainersType> extends React.Component<
       );
     }
 
-    let safeMap = map;
-    let instances = containers.map(ContainerItem => {
-      let instance;
+    containers.forEach(ContainerItem => {
+      if (!this.instances.includes(ContainerItem)) {
+        let instance;
 
-      if (
-        typeof ContainerItem === 'object' &&
-        ContainerItem instanceof Container
-      ) {
-        instance = ContainerItem;
-      } else {
-        instance = safeMap.get(ContainerItem);
+        if (
+          typeof ContainerItem === 'object' &&
+          ContainerItem instanceof Container
+        ) {
+          instance = ContainerItem;
+        } else {
+          instance = map.get(ContainerItem);
 
-        if (!instance) {
-          instance = new ContainerItem();
-          safeMap.set(ContainerItem, instance);
+          if (!instance) {
+            instance = new ContainerItem();
+            map.set(ContainerItem, instance);
+          }
         }
+        instance.subscribe(this.onUpdate);
+        this.instances.push(instance);
       }
-
-      instance.unsubscribe(this.onUpdate);
-      instance.subscribe(this.onUpdate);
-
-      return instance;
     });
-
-    this.instances = instances;
-    return instances;
+    return this.instances;
   }
+
+  _applyInstancesFromMapToChildren = map => {
+    this.props.children.apply(null, this._createInstances(map, this.props.to));
+  };
 
   render() {
     return (
       <StateContext.Consumer>
-        {map =>
-          this.props.children.apply(
-            null,
-            this._createInstances(map, this.props.to)
-          )
-        }
+        {this._applyInstancesFromMapToChildren}
       </StateContext.Consumer>
     );
   }
 }
 
-export type ProviderProps = {
-  inject?: Array<ContainerType>,
-  children: Node
-};
+export function Provider(props) {
+  _renderConsumer = parentMap => {
+    let childMap = new Map(parentMap);
 
-export function Provider(props: ProviderProps) {
-  return (
-    <StateContext.Consumer>
-      {parentMap => {
-        let childMap = new Map(parentMap);
+    if (props.inject) {
+      props.inject.forEach(instance => {
+        childMap.set(instance.constructor, instance);
+      });
+    }
 
-        if (props.inject) {
-          props.inject.forEach(instance => {
-            childMap.set(instance.constructor, instance);
-          });
-        }
-
-        return (
-          <StateContext.Provider value={childMap}>
-            {props.children}
-          </StateContext.Provider>
-        );
-      }}
-    </StateContext.Consumer>
-  );
-}
-
-let CONTAINER_DEBUG_CALLBACKS = [];
-
-// If your name isn't Sindre, this is not for you.
-// I might ruin your day suddenly if you depend on this without talking to me.
-export function __SUPER_SECRET_CONTAINER_DEBUG_HOOK__(
-  callback: (container: Container<any>) => mixed
-) {
-  CONTAINER_DEBUG_CALLBACKS.push(callback);
+    return (
+      <StateContext.Provider value={childMap}>
+        {props.children}
+      </StateContext.Provider>
+    );
+  };
+  return <StateContext.Consumer>{this._renderConsumer}</StateContext.Consumer>;
 }
